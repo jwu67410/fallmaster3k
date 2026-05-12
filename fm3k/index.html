@@ -6,56 +6,107 @@
   <style>
     body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; }
     #status { font-size: 18px; margin: 20px 0; }
+    /* Alert box is hidden by default; shown in red when a fall is detected */
     #alert { background: red; color: white; padding: 20px; display: none; border-radius: 8px; font-size: 24px; }
     button { padding: 12px 24px; font-size: 16px; cursor: pointer; }
+    /* Scrollable log panel for incoming accelerometer readings */
     #log { margin-top: 20px; font-size: 13px; color: #555; height: 200px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; }
   </style>
 </head>
 <body>
-  <h1>Fall Detection Monitor</h1>
+  <h1>Fall Master 3000 (fm3k)</h1>
   <button onclick="connect()">Connect Bracelet</button>
   <div id="status">Not connected</div>
+  <!-- Alert banner; toggled visible by triggerAlert() -->
   <div id="alert">FALL DETECTED!</div>
+  <!-- Live log of accelerometer data from the BLE device -->
   <div id="log"></div>
  
   <script>
+    // Tracks whether a free-fall phase has been detected.
+    // Fall detection uses a two-stage pattern:
+    //   1. Free fall  → magnitude drops below 0.2 g (near-weightlessness)
+    //   2. Impact     → magnitude spikes above 1.5 g (sudden deceleration on landing)
     let freeFallDetected = false;
+
+    // Holds a reference to the BLE GATT characteristic we subscribe to for data.
     let characteristic;
  
+    // Initiates a Web Bluetooth scan and connects to the "FallDetector" device.
     async function connect() {
+      // Prompt the browser's device picker, filtered to devices named "FallDetector".
+      // The Heart Rate service UUID (0x180D) is listed here because the firmware
+      // reuses that standard profile's service/characteristic slots for convenience.
       const device = await navigator.bluetooth.requestDevice({
         filters: [{ name: "FallDetector" }],
         optionalServices: ["0000180d-0000-1000-8000-00805f9b34fb"]
       });
+
+      // Establish a GATT connection to the selected device.
       const server = await device.gatt.connect();
+
+      // Access the primary service (Heart Rate service UUID used as a container).
       const service = await server.getPrimaryService("0000180d-0000-1000-8000-00805f9b34fb");
+
+      // Get the specific characteristic that streams accelerometer data.
+      // UUID 0x2A37 is the standard Heart Rate Measurement characteristic,
+      // repurposed here to carry raw XYZ float data from the wristband.
       characteristic = await service.getCharacteristic("00002a37-0000-1000-8000-00805f9b34fb");
+
+      // Register the data handler; fires whenever the device sends a new reading.
       characteristic.addEventListener("characteristicvaluechanged", onData);
+
+      // Tell the device to start pushing notifications (BLE notify mode).
       await characteristic.startNotifications();
+
       document.getElementById("status").textContent = "Connected to: " + device.name;
     }
  
+    // Called each time the BLE device sends a new accelerometer packet.
     function onData(event) {
-      const view = event.target.value;
+      const view = event.target.value; // DataView over the raw BLE packet bytes
+
+      // The firmware packs three 32-bit little-endian floats back-to-back:
+      //   bytes 0–3  → ax (X-axis acceleration, in g)
+      //   bytes 4–7  → ay (Y-axis acceleration, in g)
+      //   bytes 8–11 → az (Z-axis acceleration, in g)
       const ax = view.getFloat32(0, true);
       const ay = view.getFloat32(4, true);
       const az = view.getFloat32(8, true);
+
+      // Compute the vector magnitude: total acceleration regardless of direction.
+      // At rest, this should be ~1.0 g (gravity). Free fall → ~0 g. Impact → >1.5 g.
       const magnitude = Math.sqrt(ax*ax + ay*ay + az*az);
+
       log(`ax:${ax.toFixed(2)} ay:${ay.toFixed(2)} az:${az.toFixed(2)} mag:${magnitude.toFixed(2)}`);
-      if (magnitude < 0.4) freeFallDetected = true;
-      if (freeFallDetected && magnitude > 2.5) {
+
+      // Stage 1: Detect free fall — magnitude near zero means the device is
+      // momentarily weightless, which is characteristic of a fall in progress.
+      if (magnitude < 0.2) freeFallDetected = true;
+
+      // Stage 2: Detect impact — a sudden high-g spike after a free-fall phase
+      // indicates the person has hit the ground. Both conditions must be true
+      // in sequence to reduce false positives (e.g. from setting the wristband down).
+      if (freeFallDetected && magnitude > 1.5) {
         triggerAlert();
-        freeFallDetected = false;
+        freeFallDetected = false; // Reset so we're ready to detect the next fall
       }
     }
  
+    // Displays the fall alert banner, plays a beep, and auto-hides after 5 seconds.
     function triggerAlert() {
       const alertBox = document.getElementById("alert");
       alertBox.style.display = "block";
+
+      // Attempt to play an audible alarm; .catch() silences the error if autoplay
+      // is blocked by the browser (common without a prior user gesture).
       new Audio("https://www.soundjay.com/buttons/beep-01a.mp3").play().catch(()=>{});
+
+      // Auto-dismiss the alert after 5 000 ms.
       setTimeout(() => alertBox.style.display = "none", 5000);
     }
  
+    // Prepends a timestamped message to the on-screen log (newest entry at top).
     function log(msg) {
       const el = document.getElementById("log");
       el.innerHTML = msg + "<br>" + el.innerHTML;
