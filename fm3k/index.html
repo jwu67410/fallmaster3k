@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Fall Detector</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; }
+    #status { font-size: 18px; margin: 20px 0; }
+    #alert { background: red; color: white; padding: 20px; display: none; border-radius: 8px; font-size: 24px; }
+    button { padding: 12px 24px; font-size: 16px; cursor: pointer; }
+    #log { margin-top: 20px; font-size: 13px; color: #555; height: 200px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; }
+  </style>
+</head>
+<body>
+  <h1>Fall Detection Monitor</h1>
+  <button onclick="connect()">Connect Bracelet</button>
+  <div id="status">Not connected</div>
+  <div id="alert">FALL DETECTED!</div>
+  <div id="log"></div>
+ 
+  <script>
+    let freeFallDetected = false;
+    let characteristic;
+ 
+    async function connect() {
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ name: "FallDetector" }],
+        optionalServices: ["0000180d-0000-1000-8000-00805f9b34fb"]
+      });
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService("0000180d-0000-1000-8000-00805f9b34fb");
+      characteristic = await service.getCharacteristic("00002a37-0000-1000-8000-00805f9b34fb");
+      characteristic.addEventListener("characteristicvaluechanged", onData);
+      await characteristic.startNotifications();
+      document.getElementById("status").textContent = "Connected to: " + device.name;
+    }
+ 
+    function onData(event) {
+      const view = event.target.value;
+      const ax = view.getFloat32(0, true);
+      const ay = view.getFloat32(4, true);
+      const az = view.getFloat32(8, true);
+      const magnitude = Math.sqrt(ax*ax + ay*ay + az*az);
+      log(`ax:${ax.toFixed(2)} ay:${ay.toFixed(2)} az:${az.toFixed(2)} mag:${magnitude.toFixed(2)}`);
+      if (magnitude < 0.4) freeFallDetected = true;
+      if (freeFallDetected && magnitude > 2.5) {
+        triggerAlert();
+        freeFallDetected = false;
+      }
+    }
+ 
+    function triggerAlert() {
+      const alertBox = document.getElementById("alert");
+      alertBox.style.display = "block";
+      new Audio("https://www.soundjay.com/buttons/beep-01a.mp3").play().catch(()=>{});
+      setTimeout(() => alertBox.style.display = "none", 5000);
+    }
+ 
+    function log(msg) {
+      const el = document.getElementById("log");
+      el.innerHTML = msg + "<br>" + el.innerHTML;
+    }
+  </script>
+</body>
+</html>
